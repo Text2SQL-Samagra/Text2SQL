@@ -32,6 +32,10 @@ load_dotenv(dotenv_path=f"{ROOT_FOLDER}/.env")
 app = Quart(__name__)
 # app = cors(app)
 
+# Check if the logs directory exists, and if not, create it
+log_dir = './src/server/logs/'
+os.makedirs(log_dir, exist_ok=True)
+
 # Set up a formatter for the log messages
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
@@ -51,8 +55,33 @@ logger.setLevel(logging.INFO)  # Set the lowest logging level you want to captur
 logger.addHandler(info_handler)
 logger.addHandler(error_handler)
 
+def save_uploaded_file(uploaded_file, target_folder, new_filename):
+    if not os.path.exists(target_folder):
+        os.makedirs(target_folder)
+
+    target_file_path = os.path.join(target_folder, secure_filename(new_filename))
+    with open(target_file_path, 'wb') as f:
+        f.write(uploaded_file)
+
+    return target_file_path
+
+def read_file(file_path):
+    try:
+        print(os.getcwd(), file_path)
+        with open(file_path, 'r') as file:
+            content = file.read()
+            return content
+    except Exception as e:
+        logging.error("ERROR: {e}")
+        print(f"ERROR: {e}, {e.print_exc()}")
+    return ""
+
+
 def get_tables_from_schema_id(G):
-    tables_list = [x for x in G.tables]
+    tables_list = []
+    for node, attrs in G.nodes(data=True):
+        if attrs.get('type') == 'table':
+            tables_list.append(node)
     print(tables_list)
     return tables_list
 
@@ -71,16 +100,6 @@ def auth_required(func):
             abort(401)
 
     return wrapper
-
-def save_uploaded_file(uploaded_file, target_folder, new_filename):
-    if not os.path.exists(target_folder):
-        os.makedirs(target_folder)
-
-    target_file_path = os.path.join(target_folder, secure_filename(new_filename))
-    with open(target_file_path, 'wb') as f:
-        f.write(uploaded_file)
-
-    return target_file_path
 
 def read_file(file_path):
     try:
@@ -123,7 +142,7 @@ async def prompt():
             res_sub_query, err_msg_sub_query = await db.get_table_info(schema_id, table)
             table_list.append(res_sub_query)
         query_prompt = SQL_QUERY_PROMPT % (schema_type, prompt, table_list)
-        logging.info("prompt ", query_prompt)
+        logging.info("Prompt : %s", str(query_prompt))
         chat_gpt_query_response = await chatGPT(query_prompt, app)
         query = chat_gpt_query_response.replace('\n', ' ').replace("'''", '').replace('```', '')
         validate_flag, data = await db.validate_sql(schema_id, query)
@@ -159,7 +178,7 @@ async def promptv3():
     if status is True:
         # tables_list, err = await db.get_tables_from_schema_id(schema_id)
         schema_file = read_file(f"./files/{schema_id}.sql")
-        G = sql_to_graph(schema_file)
+        G, err = sql_to_graph(schema_file)
         tables_list = get_tables_from_schema_id(G)
         if tables_list is not None:
             tables = ', '.join([f"'{elem}'" for elem in tables_list])
@@ -172,7 +191,7 @@ async def promptv3():
         Sub_G = get_sub_graph(G, chat_gpt_response['subject'], 1)
         sub_schema = graph_to_sql(Sub_G)
         query_prompt = VERSION2_PROMPT % (schema_type, sub_schema, prompt)
-        logging.info("prompt ", query_prompt)
+        logging.info("prompt: %s", query_prompt)
         chat_gpt_query_response = await chatGPT(query_prompt, app) 
         query = chat_gpt_query_response.split('-')[1].replace('\n', ' ').replace("'''", '').replace('```', '').replace("\\", "")
         validate_flag, data = await db.validate_sql(schema_id, query)
@@ -202,7 +221,6 @@ async def promptv2():
     prompt = data['prompt']
     schema_id = data['schema_id']
     schema_type = await get_schema_type_by_schema_id(schema_id)
-    print(prompt, schema_id, schema_type)
     schema_file = read_file(f"./files/{schema_id}.sql")
     factory = database_factory()
     db = factory.get_database_connection(schema_type=schema_type)   
@@ -254,7 +272,7 @@ async def onboard():
                 create_schema, onboarding_error = await db.create_schema_in_db(schema_id, schema_file)
                 print(create_schema, onboarding_error)
                 if create_schema is True:
-                    target_folder = './src/server/files'
+                    target_folder = './files'
                     new_filename = f"{schema_id}.sql"
                     saved_file_path = save_uploaded_file(schema_file, target_folder, new_filename)
                     response = {"schema_id": schema_id, "message": "schema onboarded"}
